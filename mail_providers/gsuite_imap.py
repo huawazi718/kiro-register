@@ -119,6 +119,12 @@ class GsuiteImapProvider(MailProvider):
         self.local_prefix = local_prefix or ""
         self.local_length = max(4, int(local_length))
 
+        # Email filter from env/config or default AWS addresses
+        self.email_filter = email_filter or os.environ.get(
+            "EMAIL_AWS",
+            "no-reply@amazonaws.com,no-reply@signin.aws"
+        )
+
         # Resolve the domain pool.
         pool: list[str] = []
         if domains:
@@ -230,8 +236,10 @@ class GsuiteImapProvider(MailProvider):
 
             # Search for TO + SINCE (10 minutes window)
             # Search by SINCE + FROM only (TO filter unreliable with catch-all forwarding)
-            # AWS sends OTP from both no-reply@amazonaws.com and no-reply@signin.aws
-            search_query = f'(SINCE "{since_date}" OR FROM "no-reply@amazonaws.com" FROM "no-reply@signin.aws")'
+            # Build FROM clauses from email_filter (comma-separated)
+            from_addresses = [addr.strip() for addr in self.email_filter.split(",") if addr.strip()]
+            from_clauses = " ".join(f'FROM "{addr}"' for addr in from_addresses)
+            search_query = f'(SINCE "{since_date}" OR {from_clauses})'
             print(f"[IMAP DEBUG] ========== Search Phase ==========", flush=True)
             print(f"[IMAP DEBUG] SINCE date: {since_date}", flush=True)
             print(f"[IMAP DEBUG] Search query: {search_query}", flush=True)

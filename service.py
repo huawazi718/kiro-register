@@ -226,6 +226,7 @@ def build_mail_provider(cfg: dict, config_path: Path):
             domains=domain_list or None,
             domains_file=str(domains_path) if domains_path.exists() and not domain_list else None,
             local_length=10,
+            email_filter=cfg.get("imap_email_filter", ""),
         )
 
     if name == "shiromail":
