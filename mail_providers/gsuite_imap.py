@@ -110,6 +110,7 @@ class GsuiteImapProvider(MailProvider):
         domains_file: str | Path | None = None,
         local_prefix: str = "",
         local_length: int = 10,
+        email_filter: str = "",
     ):
         self.imap_server = imap_server
         self.imap_port = int(imap_port) if imap_port else 993
