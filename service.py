@@ -24,11 +24,15 @@ from urllib.parse import urlparse
 import kiro_register
 import mail_providers
 from proxy_pool import load_proxy_pool_from_env
+from domain_pool import DomainPool, load_domain_pool_from_config
 
 logger = logging.getLogger("kiro-service")
 
 # Global proxy pool instance
 _proxy_pool = None
+
+# Global domain pool instance
+_domain_pool = None
 
 # ANSI color codes for beautiful logging
 GRN, RED, YEL, CYN, RST, BOLD = '\033[32m', '\033[31m', '\033[33m', '\033[36m', '\033[0m', '\033[1m'
@@ -52,6 +56,9 @@ DEFAULT_CFG = {
     "router9_auth_token": "",
     "router9_auth_token_expires_at": "",
     "proxy_url": "",
+    "default_password": "",
+    "domain_suspend_duration": 3600,
+    "default_password": "",
     "shiromail_base_url": "https://shiromail.galiais.com",
     "shiromail_api_key": "",
     "shiromail_domain_id": "",
@@ -84,6 +91,8 @@ ENV_MAP = {
     "ROUTER9_AUTH_TOKEN": "router9_auth_token",
     "ROUTER9_AUTH_TOKEN_EXPIRES_AT": "router9_auth_token_expires_at",
     "PROXY_URL": "proxy_url",
+    "DEFAULT_PASSWORD": "default_password",
+    "DOMAIN_SUSPEND_DURATION": "domain_suspend_duration",
 }
 
 
@@ -206,7 +215,7 @@ def _start_xvfb_if_needed(headless: bool) -> subprocess.Popen | None:
         return None
 
 
-def build_mail_provider(cfg: dict, config_path: Path):
+def build_mail_provider(cfg: dict, config_path: Path, domain_pool=None):
     name = str(cfg.get("mail_provider", "gsuite_imap")).strip().lower()
     domain_list = cfg.get("domains") or []
 
@@ -227,6 +236,7 @@ def build_mail_provider(cfg: dict, config_path: Path):
             domains_file=str(domains_path) if domains_path.exists() and not domain_list else None,
             local_length=10,
             email_filter=cfg.get("imap_email_filter", ""),
+            domain_pool=domain_pool,
         )
 
     if name == "shiromail":
@@ -343,7 +353,7 @@ def persist_account(result: dict):
 
 
 async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url: str, headless: bool, account_num: int):
-    global _proxy_pool
+    global _proxy_pool, _domain_pool
 
     log_header(f"┌─ Account #{account_num} ─{'─'*56}")
     start_time = time.time()
@@ -367,7 +377,7 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
             log_info(f"Using configured proxy: {active_proxy}")
 
         try:
-            provider = build_mail_provider(cfg, config_path)
+            provider = build_mail_provider(cfg, config_path, _domain_pool)
 
             if use_9router:
                 router9_config = {
@@ -388,7 +398,11 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
                     log=log_callback,
                     cached_email=cached_email,
                     cached_device_code_data=cached_device_code,
+                    default_password=cfg.get("default_password") or None,
                 )
+                # Update config with fresh token
+                cfg["router9_auth_token"] = router9_config.get("auth_token", "")
+                cfg["router9_auth_token_expires_at"] = router9_config.get("auth_token_expires_at", "")
             else:
                 result = await kiro_register.register(
                     headless=headless,
@@ -397,6 +411,7 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
                     mail_provider_instance=provider,
                     proxy_url=active_proxy,
                     log=log_callback,
+                    default_password=cfg.get("default_password") or None,
                 )
 
             last_result = result
@@ -416,6 +431,47 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
                     log_info(f"Client ID: {result.get('client_id', 'N/A')[:20]}...")
                     log_info(f"Region: {result.get('region', 'us-east-1')}")
                     log_info(f"Auth Method: {result.get('auth_method', 'IdC')}")
+
+                    # Update provider data on 9router API
+                    account_id = result.get("account_id")
+                    if account_id:
+                        try:
+                            import urllib.request
+                            domain = email.split("@")[1] if "@" in email else ""
+                            name = email.split("@")[0] if "@" in email else email
+                            # tags = f"kiro_tag_{domain}" if domain else "kiro_tag"
+
+                            update_payload = {
+                                "name": name,
+                                "providerSpecificData": {
+                                    "tag": f"{domain}" if domain else "group_kiro"
+                                    # "tags": tags
+                                }
+                            }
+
+                            # Debug log payload
+                            log_info(f"PUT /api/providers/{account_id}")
+                            log_info(f"Payload: {json.dumps(update_payload, indent=2)}")
+
+                            update_url = f"{cfg.get('router9_url')}/api/providers/{account_id}"
+                            update_req = urllib.request.Request(
+                                update_url,
+                                data=json.dumps(update_payload).encode('utf-8'),
+                                headers={
+                                    'Content-Type': 'application/json',
+                                    'Cookie': f'auth_token={cfg.get("router9_auth_token")}',
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0'
+                                },
+                                method='PUT'
+                            )
+
+                            with urllib.request.urlopen(update_req, timeout=30) as resp:
+                                response_body = resp.read().decode('utf-8')
+                                log_ok(f"Updated 9router provider metadata: {tags}")
+                                log_info(f"Response: {response_body[:200]}")
+                        except Exception as e:
+                            log_err(f"Failed to update 9router provider: {str(e)[:80]}")
+
                 log_header(f"└─{'─'*70}")
 
                 persist_account(result)
@@ -425,13 +481,30 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
             if _proxy_pool and active_proxy:
                 _proxy_pool.report_failure(active_proxy)
 
-            # Cache for retry
-            cached_email = result.get("email")
-            if "device_code_info" in result:
-                cached_device_code = result["device_code_info"]
-
             fail_reason = result.get("failReason", "unknown")
             log_err(f"{email}: {fail_reason} (attempt {attempt}/{MAX_RETRIES})")
+
+            # TES block detection: suspend domain and clear cached_email
+            is_tes_block = "BLOCKED" in fail_reason.upper() or "TES" in fail_reason.upper()
+            if _domain_pool and email and is_tes_block:
+                domain = email.split("@")[1] if "@" in email else None
+                if domain:
+                    _domain_pool.suspend_domain(domain)
+                    stats = _domain_pool.get_stats()
+                    log_err(f"Domain {domain} suspended due to TES block. Pool: {stats['available']}/{stats['total']} available")
+                    if stats["available"] == 0 and stats["next_unsuspend_seconds"]:
+                        wait_time = stats["next_unsuspend_seconds"]
+                        log_info(f"All domains suspended. Waiting {wait_time}s for next domain recovery...")
+                        await asyncio.sleep(wait_time)
+                # Clear cached_email to force new domain on retry
+                cached_email = None
+                cached_device_code = None
+                log_info("Cleared cached email - will use new domain on retry")
+            else:
+                # Non-TES failures: cache for retry
+                cached_email = result.get("email")
+                if "device_code_info" in result:
+                    cached_device_code = result["device_code_info"]
 
             # Retry delays: 5s, 10s, 15s
             if attempt < MAX_RETRIES:
@@ -483,7 +556,7 @@ def parse_args(argv=None):
 
 
 async def main():
-    global _proxy_pool
+    global _proxy_pool, _domain_pool
 
     args = parse_args()
     logging.basicConfig(
@@ -510,6 +583,12 @@ async def main():
     logger.info("Config path: %s", config_path)
     logger.info("Mail provider: %s", cfg.get("mail_provider"))
     logger.info("DB path: %s", _db_path())
+
+    # Initialize domain pool for gsuite_imap
+    _domain_pool = load_domain_pool_from_config(cfg, config_path)
+    if _domain_pool:
+        stats = _domain_pool.get_stats()
+        logger.info(f"Domain pool loaded: {stats['total']} domains, {stats['available']} available, suspend_duration={cfg.get('domain_suspend_duration')}s")
 
     init_db()
 

@@ -15,8 +15,11 @@
       "Bash(python *)",
       "Bash(env)",
       "Bash(pip list *)",
-what      "Bash(pip3 list *)",
-      "Bash(awk *)"
+      "Bash(pip3 list *)",
+      "Bash(awk *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ],
     "allowed": [
       "python *",

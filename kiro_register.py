@@ -365,7 +365,9 @@ async def _move_to_element(page, locator):
         pass
 
 
-def _generate_password(length=16):
+def _generate_password(length=16, default=None):
+    if default:
+        return default
     upper = string.ascii_uppercase
     lower = string.ascii_lowercase
     digits = string.digits
@@ -534,7 +536,8 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                    mail_url=None, mail_key=None, mail_domain_id=None,
                    mail_provider_instance=None,
                    proxy_url=None,
-                   log=print, cancel_check=None):
+                   log=print, cancel_check=None,
+                   default_password=None):
     """
     Run the full Kiro auto-registration flow.
 
@@ -582,7 +585,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
     else:
         mail = ShiroMailClient(base_url=mail_url, api_key=mail_key, domain_id=mail_domain_id)
     email = mail.create_mailbox()
-    password = _generate_password()
+    password = _generate_password(default=default_password)
     full_name = _generate_name()
     log(f"Generated credentials - Email: {email}", "info")
     log(f"Generated credentials - Password: {password[:4]}****", "dbg")
@@ -1500,7 +1503,8 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
                                      proxy_url=None,
                                      log=print, cancel_check=None,
                                      cached_email=None,
-                                     cached_device_code_data=None):
+                                     cached_device_code_data=None,
+                                     default_password=None):
     """
     Register AWS Builder ID via 9router OAuth device code flow.
 
@@ -1573,7 +1577,7 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
         email = mail.create_mailbox()
         log(f"Generated new email: {email}", "dbg")
 
-    password = _generate_password()
+    password = _generate_password(default=default_password)
     full_name = _generate_name()
     log(f"Email: {email}", "ok")
 
@@ -1699,6 +1703,14 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
 
             # Fill email if on signin page
             if "signin.aws" in page.url:
+                # Wait for page to fully load (assets, locales, etc)
+                log("Waiting for page assets to load...", "info")
+                await asyncio.sleep(5)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except:
+                    pass
+
                 log("Looking for email input and Continue button in parallel...", "info")
 
                 # Helper function to find element by trying multiple selectors
@@ -2125,7 +2137,7 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
                 return _partial("Password input not found")
 
             # Generate password
-            password = _generate_password()
+            password = _generate_password(default=default_password)
             log(f"Filling generated password into input field (length: {len(password)})", "info")
 
             # Fill password
@@ -2210,6 +2222,10 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
 
             await asyncio.sleep(3)
 
+            # Account created successfully at this point (password set)
+            log("✅ AWS Builder ID account created (password set)", "ok")
+            account_created = True
+
             # Phase 2.3: Device authorization (automated)
             log("Waiting for device code confirmation page...", "info")
             await asyncio.sleep(3)
@@ -2290,13 +2306,24 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
     poll = r9.poll_account(device_code, client_id, client_secret, code_verifier, log, 3)
 
     exported = poll["ok"]
+    poll_response = poll.get("response", {})
+    # API returns {"success": true, "connection": {"id": "...", "provider": "kiro"}}
+    connection = poll_response.get("connection", {})
+    account_id = connection.get("id") or poll_response.get("id")
+
+    # Debug log poll response
+    log(f"Poll response: {json.dumps(poll_response, indent=2)}", "dbg")
+    if account_id:
+        log(f"Extracted account_id: {account_id}", "dbg")
+
     if exported:
         log("✅ Exported to 9router!", "ok")
+        if account_id:
+            log(f"   Account ID: {account_id}", "info")
     else:
-        log(f"⚠️  Export failed: {poll.get('error', 'unknown')}", "warn")
-        # Export failed = incomplete registration
-        await browser.close()
-        return _partial("9router export failed")
+        # Export failed but account already created - non-fatal warning
+        log(f"⚠️  Export failed: {poll.get('error', 'unknown')} (account still created)", "warn")
+        log("Account created successfully but 9router export incomplete", "warn")
 
     # Phase 4: Local tokens
     if auto_login:
@@ -2313,7 +2340,7 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
     log(f"  9router Export Status: {exported}", "info")
     log("=" * 40, "info")
 
-    return {
+    result = {
         "email": email,
         "password": password,
         "full_name": full_name,
@@ -2338,3 +2365,8 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
             "expires_at_timestamp": device_code_expires_at,
         },
     }
+
+    if account_id:
+        result["account_id"] = account_id
+
+    return result

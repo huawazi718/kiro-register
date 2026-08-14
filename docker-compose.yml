@@ -19,9 +19,11 @@ services:
       # - MULTIBOT_API_KEY=xxx
       # - ROUTER9_URL=https://oapi.fastev.my.id
       # - ROUTER9_PASSWORD=xxx
+    env_file:
+      - .env
     # Default loop: one account every 5 minutes (headless).
     command: >
-      python service.py --service --delay 300 --headless
+      python service.py --service --delay 300 --9router
 
 volumes:
   kiro-data:

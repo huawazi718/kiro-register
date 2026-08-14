@@ -46,8 +46,80 @@ def _load_domains_from_file(path: str | Path) -> list[str]:
 
 
 def _random_local(length: int = 10) -> str:
+    """DEPRECATED: use _generate_human_email instead."""
     pool = string.ascii_lowercase + string.digits
     return "".join(random.choices(pool, k=length))
+
+
+def _generate_human_email(max_length: int = 20, custom_first: list[str] = None, custom_last: list[str] = None) -> str:
+    """
+    Generate human-like email local part (a-z0-9.-).
+
+    Patterns:
+    - firstname.lastname
+    - firstname.lastname123
+    - firstname
+    - lastname
+    - name-name or name.name
+    - name123
+
+    Args:
+        max_length: Max chars for local part (default 20)
+        custom_first: Additional first names from env
+        custom_last: Additional last names from env
+
+    Returns local part only (before @), max 20 chars.
+    """
+    pool_digit = string.digits
+
+    # Default name banks
+    first = ["john", "jane", "alex", "chris", "sam", "taylor", "jordan", "casey",
+             "morgan", "riley", "drew", "avery", "charlie", "jamie", "robin"]
+    last = ["smith", "jones", "brown", "wilson", "davis", "miller", "moore", "taylor",
+            "anderson", "thomas", "jackson", "white", "harris", "martin", "thompson"]
+
+    # Merge custom names from env
+    if custom_first:
+        first = first + [n.lower().strip() for n in custom_first if n.strip()]
+    if custom_last:
+        last = last + [n.lower().strip() for n in custom_last if n.strip()]
+
+    pattern = random.randint(1, 6)
+
+    if pattern == 1:
+        # firstname.lastname
+        f = random.choice(first)
+        l = random.choice(last)
+        local = f"{f}.{l}"
+    elif pattern == 2:
+        # firstname.lastname{2-3 digits}
+        f = random.choice(first)
+        l = random.choice(last)
+        num = "".join(random.choices(pool_digit, k=random.randint(2, 3)))
+        local = f"{f}.{l}{num}"
+    elif pattern == 3:
+        # name-name or name.name
+        f = random.choice(first)
+        l = random.choice(last)
+        sep = random.choice(["-", "."])
+        local = f"{f}{sep}{l}"
+    elif pattern == 4:
+        # name{3-5 digits}
+        name = random.choice(first + last)
+        num = "".join(random.choices(pool_digit, k=random.randint(3, 5)))
+        local = f"{name}{num}"
+    elif pattern == 5:
+        # firstname only
+        local = random.choice(first)
+    else:
+        # lastname only
+        local = random.choice(last)
+
+    # Truncate to max_length
+    if len(local) > max_length:
+        local = local[:max_length]
+
+    return local
 
 
 def _decode_header_value(raw: str) -> str:
@@ -111,6 +183,7 @@ class GsuiteImapProvider(MailProvider):
         local_prefix: str = "",
         local_length: int = 10,
         email_filter: str = "",
+        domain_pool=None,
     ):
         self.imap_server = imap_server
         self.imap_port = int(imap_port) if imap_port else 993
@@ -125,6 +198,15 @@ class GsuiteImapProvider(MailProvider):
             "EMAIL_AWS",
             "no-reply@amazonaws.com,no-reply@signin.aws"
         )
+
+        # Domain pool manager (optional)
+        self.domain_pool = domain_pool
+
+        # Custom name banks from env (comma-separated)
+        custom_first_env = os.environ.get("EMAIL_FIRST_NAMES", "")
+        custom_last_env = os.environ.get("EMAIL_LAST_NAMES", "")
+        self.custom_first_names = [n.strip() for n in custom_first_env.split(",") if n.strip()]
+        self.custom_last_names = [n.strip() for n in custom_last_env.split(",") if n.strip()]
 
         # Resolve the domain pool.
         pool: list[str] = []
@@ -147,16 +229,36 @@ class GsuiteImapProvider(MailProvider):
         # Monotonically-bumped set of UIDs we've already consumed so the same
         # OTP isn't returned twice if the caller reuses the provider.
         self._seen_uids: set[str] = set()
+        # Collision tracking: {domain: set(local_parts)} to prevent duplicates
+        self._used_locals: dict[str, set[str]] = {}
 
     # ------------------------------------------------------------------
     # MailProvider interface
     # ------------------------------------------------------------------
 
     def create_mailbox(self) -> str:
-        domain = random.choice(self.domains)
-        timestamp = int(time.time())
-        random_suffix = _random_local(self.local_length)
-        local = f"{self.local_prefix}{timestamp}{random_suffix}"
+        # Use domain pool if available, fallback to random choice
+        if self.domain_pool:
+            domain = self.domain_pool.get_domain()
+            if not domain:
+                raise RuntimeError("All domains suspended due to TES blocks. Waiting for recovery...")
+        else:
+            domain = random.choice(self.domains)
+
+        # Initialize tracking for this domain
+        if domain not in self._used_locals:
+            self._used_locals[domain] = set()
+
+        # Generate unique local part (max 10 attempts to avoid collision)
+        for _ in range(10):
+            local = _generate_human_email(20, self.custom_first_names, self.custom_last_names)
+            if local not in self._used_locals[domain]:
+                self._used_locals[domain].add(local)
+                break
+        else:
+            # Fallback: append timestamp if all attempts collide
+            local = f"{local}{int(time.time()) % 10000}"
+
         self.address = f"{local}@{domain}"
         self._created_at = time.time()
         self._seen_uids = set()
