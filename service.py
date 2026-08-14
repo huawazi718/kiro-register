@@ -439,7 +439,7 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
                             import urllib.request
                             domain = email.split("@")[1] if "@" in email else ""
                             name = email.split("@")[0] if "@" in email else email
-                            # tags = f"kiro_tag_{domain}" if domain else "kiro_tag"
+                            tags = f"{domain}" if domain else "group_kiro"
 
                             update_payload = {
                                 "name": name,
