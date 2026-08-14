@@ -443,6 +443,7 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
 
                             update_payload = {
                                 "name": name,
+                                "priority": 99,
                                 "providerSpecificData": {
                                     "tag": f"{domain}" if domain else "group_kiro"
                                     # "tags": tags
@@ -468,7 +469,7 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
                             with urllib.request.urlopen(update_req, timeout=30) as resp:
                                 response_body = resp.read().decode('utf-8')
                                 log_ok(f"Updated 9router provider metadata: {tags}")
-                                log_info(f"Response: {response_body[:200]}")
+                                # log_info(f"Response: {response_body[:200]}")
                         except Exception as e:
                             log_err(f"Failed to update 9router provider: {str(e)[:80]}")
 
