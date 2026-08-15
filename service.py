@@ -444,6 +444,7 @@ async def run_account(cfg: dict, config_path: Path, use_9router: bool, proxy_url
                             update_payload = {
                                 "name": name,
                                 "priority": 99,
+                                "healthCheckInterval": random.randint(45, 55),
                                 "providerSpecificData": {
                                     "tag": f"{domain}" if domain else "group_kiro"
                                     # "tags": tags
