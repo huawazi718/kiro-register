@@ -30,31 +30,3 @@ jobs:
         run: |
           rm -f accounts.db
           python diagnose.py 2>&1
-
-      - name: Diagnose via residential proxy
-        env:
-          PROXY: ${{ secrets.PROXY_URL }}
-        run: |
-          python - <<'PY' 2>&1
-          import asyncio, os
-          URL = os.environ.get("URL", "https://app.kiro.dev/signin?state=diag2&code_challenge=abc&code_challenge_method=S256&redirect_uri=http%3A%2F%2F127.0.0.1%3A3128&redirect_from=KiroIDE")
-          PROXY = os.environ.get("PROXY", "")
-          async def main():
-              from playwright.async_api import async_playwright
-              async with async_playwright() as p:
-                  kw = {"headless": True, "args": ["--no-sandbox"]}
-                  if PROXY:
-                      kw["proxy"] = {"server": PROXY}
-                  browser = await p.chromium.launch(**kw)
-                  page = await browser.new_page()
-                  resp = await page.goto(URL, timeout=60000, wait_until="domcontentloaded")
-                  print("=== STATUS ===", resp.status if resp else "None")
-                  print("=== URL ===", page.url)
-                  print("=== TITLE ===", await page.title())
-                  await page.wait_for_timeout(5000)
-                  print("=== TITLE 5s ===", await page.title())
-                  body = await page.evaluate("() => document.body ? document.body.innerText : ''")
-                  print("=== BODY ===", repr(body[:300]))
-                  await browser.close()
-          asyncio.run(main())
-          PY
