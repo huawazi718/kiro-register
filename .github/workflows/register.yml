@@ -48,9 +48,11 @@ jobs:
           CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: '1'
         run: |
-          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker 2>&1
+          # 代理只用于注册的浏览器/OIDC 流量；查码(cf_worker)、打码(capsolver)均直连不占代理
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --proxy "$PROXY_URL" 2>&1
 
       - name: Show result
         if: always()
