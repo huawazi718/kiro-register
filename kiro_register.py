@@ -825,14 +825,19 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             # Click the AWS Builder ID button.
             if "app.kiro.dev" in page.url:
                 log("Selecting sign-in method...")
-                await asyncio.sleep(1)  # Reduced from 2s
+                await asyncio.sleep(2)
                 signin_clicked = False
+
+                # Current UI (Mantine): the button is a plain <button> whose
+                # innerText is "Builder ID\nSign in". The old #layout-viewport
+                # XPath no longer matches, and contains(text(),...) fails because
+                # the text is split across a line break. Click by iterating every
+                # visible button and matching the text we really see.
                 for sel in [
-                    'xpath=//*[@id="layout-viewport"]/div/div/div/div[2]/div/div[1]/button[3]',
-                    'xpath=//button[contains(text(),"AWS Builder ID")]',
+                    'xpath=//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "builder id")]',
+                    'xpath=//button[normalize-space()="Builder ID Sign in"]',
                     'xpath=//button[contains(text(),"Builder ID")]',
                     'xpath=//button[contains(text(),"Sign in")]',
-                    'xpath=//button[contains(text(),"Continue")]',
                 ]:
                     loc = page.locator(sel)
                     try:
@@ -844,23 +849,35 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                     except Exception:
                         pass
 
-                if signin_clicked:
-                    await asyncio.sleep(1.5)  # Reduced from 3s
-                    if not CallbackHandler.signin_callback_params:
-                        try:
-                            await page.evaluate("""() => {
-                                const btn = document.querySelector('#layout-viewport button:nth-child(3)') ||
-                                            document.querySelectorAll('#layout-viewport button')[2];
-                                if (btn) btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-                            }""")
-                        except Exception:
-                            pass
-                        await asyncio.sleep(3)
+                if not signin_clicked:
+                    clicked = await page.evaluate("""() => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        for (const b of btns) {
+                            if (b.offsetWidth === 0 || b.offsetHeight === 0) continue;
+                            const t = (b.innerText || '').toLowerCase();
+                            if (t.includes('builder id')) {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""")
+                    if clicked:
+                        signin_clicked = True
+                        log("Clicked sign-in button (JS fallback)", "ok")
 
+                if signin_clicked:
+                    await asyncio.sleep(2)
+
+                # Wait for the AWS signin redirect, not the OAuth callback.
                 for _ in range(20):
-                    if CallbackHandler.signin_callback_params:
+                    if "signin.aws" in page.url or CallbackHandler.signin_callback_params:
                         break
                     await asyncio.sleep(1)
+                if "signin.aws" in page.url:
+                    log(f"Redirected to AWS signin: {page.url[:80]}", "ok")
+                elif CallbackHandler.signin_callback_params:
+                    log("OAuth callback captured (no AWS signin interstitial)", "ok")
 
             # Build the OIDC authorize URL.
             if CallbackHandler.signin_callback_params and not authorization_code:
