@@ -39,6 +39,7 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install chromium
           python -m playwright install-deps chromium
+          sudo apt-get install -y -q xvfb
 
       - name: Register accounts
         env:
@@ -49,8 +50,12 @@ jobs:
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
           PYTHONUNBUFFERED: '1'
+          DISPLAY: ':99'
         run: |
-          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker 2>&1
+          # 逐步来：先用 xvfb 有头模式测，先不加代理（TES 画像 headless，先排除这个变量）
+          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
+          sleep 2
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless 2>&1
 
       - name: Show result
         if: always()
