@@ -16,6 +16,7 @@ import secrets
 import socket
 import stat
 import string
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -528,6 +529,23 @@ def _parse_proxy_url(url):
     return out
 
 
+def _camoufox_headless_mode(headless):
+    """Map the legacy headless flag to a Camoufox headless mode.
+
+    - headless=True  -> pure headless (weakest anti-detect; debugging only)
+    - DISPLAY set    -> headed (reuse the external Xvfb / real display)
+    - Linux, no DISP -> "virtual" (Camoufox spins up its own Xvfb)
+    - otherwise      -> headed
+    """
+    if headless:
+        return True
+    if os.environ.get("DISPLAY"):
+        return False
+    if sys.platform.startswith("linux"):
+        return "virtual"
+    return False
+
+
 async def register(headless=True, auto_login=True, skip_onboard=True,
                    mail_url=None, mail_key=None, mail_domain_id=None,
                    mail_provider_instance=None,
@@ -553,17 +571,14 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
         dict with account info, or None.
     """
     from curl_cffi import requests as curl_requests
-    from playwright.async_api import async_playwright
-    from playwright_stealth import Stealth
+    from camoufox.async_api import AsyncCamoufox
 
     if cancel_check and cancel_check():
         return None
 
-    # Build a random fingerprint config.
-    fp_config = _random_fingerprint_config()
-    log(f"Generated browser fingerprint: Chrome/{fp_config['user_agent'].split('Chrome/')[1].split(' ')[0]}, "
-        f"viewport={fp_config['viewport']['width']}x{fp_config['viewport']['height']}, "
-        f"timezone={fp_config['timezone']}", "dbg")
+    # Camoufox generates a full Firefox fingerprint (UA, screen, fonts, WebGL,
+    # timezone, locale) at the C++ engine level — no JS injection needed.
+    log("Browser engine: Camoufox (Firefox) — fingerprint handled natively", "dbg")
 
     pw_proxy = _parse_proxy_url(proxy_url)
     if pw_proxy:
@@ -748,47 +763,22 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
     log("Local callback server listening on 127.0.0.1:3128", "ok")
 
     try:
-        async with async_playwright() as p:
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--no-first-run",
-                f"--window-size={fp_config['screen']['width']},{fp_config['screen']['height']}",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                # grok2 借鉴：屏蔽 WebRTC 泄漏真实 IP（可被 TES 用于发现数据中心出口）
-                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                "--webrtc-ip-handling-policy=disable_non_proxied_udp",
-            ]
-            if headless:
-                launch_args += ["--disable-gpu", "--no-sandbox",
-                                "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            launch_kwargs = {"headless": headless, "args": launch_args}
-            if pw_proxy:
-                launch_kwargs["proxy"] = pw_proxy
-            browser = await p.chromium.launch(**launch_kwargs)
-            context = await browser.new_context(
-                viewport=fp_config["viewport"],
-                screen=fp_config["screen"],
-                locale=fp_config["locale"],
-                timezone_id=fp_config["timezone"],
-                user_agent=fp_config["user_agent"],
-                color_scheme="light",
-                device_scale_factor=fp_config["pixel_ratio"],
-            )
+        async with AsyncCamoufox(
+            headless=_camoufox_headless_mode(headless),
+            os="windows",
+            humanize=True,
+            block_webrtc=True,
+            geoip=True,
+            i_know_what_im_doing=True,
+            proxy=pw_proxy,
+        ) as browser:
+            context = await browser.new_context()
             page = await context.new_page()
             page.set_default_timeout(90000)  # 90s timeout for all operations
 
-            if _antidetect_mode == "minimal":
-                await context.add_init_script(_build_minimal_stealth_script())
-                log("Anti-detect: minimal (webdriver hidden, no SPA-breaking hooks)", "dbg")
-            elif _antidetect_mode == "full":
-                await Stealth().apply_stealth_async(page)
-                await context.add_init_script(_build_fingerprint_script(fp_config))
-                log("Anti-detect: full (stealth + fingerprint script)", "dbg")
-            else:
-                log("Anti-detect: off (bare browser)", "dbg")
+            # Camoufox 在引擎层已隐藏 webdriver 并注入真实指纹，无需任何
+            # init_script / Stealth 补丁。之前的 minimal/full/off 三档 JS 反检测
+            # 对 AWS TES 全灭，故一并废弃（Chromium 路线已放弃）。
 
             # Track the latest create-identity outcome so the OTP retry loop can
             # short-circuit on fatal errors (OTP consumed, account banned, etc).
@@ -815,10 +805,6 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                     except Exception:
                         pass
             page.on("response", _on_profile_response)
-
-            # Inject the deep fingerprint overrides (only for "full" mode).
-            if _antidetect_mode == "full":
-                await context.add_init_script(_build_fingerprint_script(fp_config))
 
             await page.goto(signin_url, timeout=60000)
             # networkidle can never fire on ad/analytics-heavy pages; prefer
@@ -1578,8 +1564,7 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
         dict with account info + router9_exported flag, or None
     """
     from curl_cffi import requests as curl_requests
-    from playwright.async_api import async_playwright
-    from playwright_stealth import Stealth
+    from camoufox.async_api import AsyncCamoufox
     from router9_oauth import Router9OAuthClient
 
     if cancel_check and cancel_check():
@@ -1589,10 +1574,8 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
         log("router9_config required for 9router OAuth device code registration flow", "err")
         return None
 
-    # Setup
-    fp_config = _random_fingerprint_config()
-    log(f"Generated browser fingerprint for 9router flow: Chrome/{fp_config['user_agent'].split('Chrome/')[1].split(' ')[0]}, "
-        f"viewport={fp_config['viewport']['width']}x{fp_config['viewport']['height']}", "dbg")
+    # Camoufox 引擎层生成指纹，无需 JS 注入。
+    log("Browser engine: Camoufox (Firefox) for 9router flow", "dbg")
 
     pw_proxy = _parse_proxy_url(proxy_url)
     if pw_proxy:
@@ -1705,33 +1688,17 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
     # Phase 2: Browser automation
     log(f"Phase 2: Launching browser for device code authorization (headless={headless})", "info")
 
-    async with async_playwright() as p:
-        args = [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
-        ]
-        if headless:
-            args += ["--disable-gpu", "--no-sandbox"]
-
-        kwargs = {"headless": headless, "args": args}
-        if pw_proxy:
-            kwargs["proxy"] = pw_proxy
-
-        browser = await p.chromium.launch(**kwargs)
-        ctx = await browser.new_context(
-            viewport=fp_config["viewport"],
-            screen=fp_config["screen"],
-            locale=fp_config["locale"],
-            timezone_id=fp_config["timezone"],
-            user_agent=fp_config["user_agent"],
-            device_scale_factor=fp_config["pixel_ratio"],
-        )
+    async with AsyncCamoufox(
+        headless=_camoufox_headless_mode(headless),
+        os="windows",
+        humanize=True,
+        block_webrtc=True,
+        geoip=True,
+        i_know_what_im_doing=True,
+        proxy=pw_proxy,
+    ) as browser:
+        ctx = await browser.new_context()
         page = await ctx.new_page()
-        if _antidetect_mode == "minimal":
-            await ctx.add_init_script(_build_minimal_stealth_script())
-        elif _antidetect_mode == "full":
-            await Stealth().apply_stealth_async(page)
-            await ctx.add_init_script(_build_fingerprint_script(fp_config))
 
         try:
             await page.goto(verify_url, timeout=60000)
