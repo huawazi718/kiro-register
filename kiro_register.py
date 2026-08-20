@@ -181,42 +181,6 @@ def _build_fingerprint_script(fp_config):
             return getParameterOrig2.call(this, param);
         };
 
-        // Canvas fingerprint noise
-        const toDataURLOrig = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(type) {
-            const ctx = this.getContext('2d');
-            if (ctx) {
-                const noise = parseInt(config.canvas_noise, 16);
-                const imageData = ctx.getImageData(0, 0, Math.min(this.width, 2), Math.min(this.height, 2));
-                for (let i = 0; i < imageData.data.length; i += 4) {
-                    imageData.data[i] = (imageData.data[i] + (noise >> (i % 8)) % 3) & 0xFF;
-                }
-                ctx.putImageData(imageData, 0, 0);
-            }
-            return toDataURLOrig.call(this, type);
-        };
-
-        // AudioContext fingerprint
-        const origGetChannelData = AudioBuffer.prototype.getChannelData;
-        AudioBuffer.prototype.getChannelData = function(channel) {
-            const data = origGetChannelData.call(this, channel);
-            if (data.length > 0) {
-                const noise = parseInt(config.canvas_noise.slice(0, 4), 16) / 65536;
-                for (let i = 0; i < Math.min(data.length, 10); i++) {
-                    data[i] += (noise * 0.0000001);
-                }
-            }
-            return data;
-        };
-
-        // ClientRects noise
-        const origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
-        Element.prototype.getBoundingClientRect = function() {
-            const rect = origGetBoundingClientRect.call(this);
-            const noise = parseInt(config.canvas_noise.slice(4, 8), 16) % 3 * 0.00001;
-            return new DOMRect(rect.x + noise, rect.y + noise, rect.width + noise, rect.height + noise);
-        };
-
         // Permissions API
         const origQuery = navigator.permissions.query;
         navigator.permissions.query = function(desc) {
@@ -242,18 +206,6 @@ def _build_fingerprint_script(fp_config):
                 addEventListener: () => {},
             });
         }
-
-        // Performance.now() - tiny noise to defeat precision-timing fingerprinting
-        const perfNowOrig = Performance.prototype.now;
-        Performance.prototype.now = function() {
-            return perfNowOrig.call(this) + Math.random() * 0.1;
-        };
-
-        // Date.now() - tiny jitter
-        const dateNowOrig = Date.now;
-        Date.now = function() {
-            return dateNowOrig() + Math.floor(Math.random() * 2);
-        };
 
         // Hide the webdriver flag
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -563,12 +515,14 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
     if cancel_check and cancel_check():
         return None
 
-    # The bundled anti-detection layers (playwright-stealth + the custom
-    # fingerprint init-script) break Kiro's React SPA: with them enabled the
-    # page renders an empty "Kiro Web Portal" shell (0 buttons), while a bare
-    # Playwright browser renders the full sign-in UI (13 buttons). Default them
-    # OFF; set KIRO_ANTIDETECT=1 to opt back in.
-    use_antidetect = os.environ.get("KIRO_ANTIDETECT", "").strip().lower() in {"1", "true", "yes", "on"}
+    # Previous investigation: the React SPA renders an empty shell when the
+    # fingerprint init-script is active. Root cause was three "noise" hooks
+    # (Canvas/Audio/ClientRects) plus Date.now()/Performance.now() jitter that
+    # broke React's scheduler. Those are now removed; the remaining overrides
+    # only hide automation flags (webdriver) + patch benign fingerprint surfaces,
+    # which is required to get past AWS TES on send-otp. So anti-detect is back
+    # ON by default. Set KIRO_ANTIDETECT=0 to disable it.
+    use_antidetect = os.environ.get("KIRO_ANTIDETECT", "1").strip().lower() not in {"0", "false", "no", "off"}
 
     # Build a random fingerprint config.
     fp_config = _random_fingerprint_config()
@@ -790,7 +744,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             if use_antidetect:
                 await Stealth().apply_stealth_async(page)
             else:
-                log("Anti-detect disabled — running a clean browser (KIRO_ANTIDETECT unset)", "dbg")
+                log("Anti-detect disabled — running a clean browser (KIRO_ANTIDETECT=0)", "dbg")
 
             # Track the latest create-identity outcome so the OTP retry loop can
             # short-circuit on fatal errors (OTP consumed, account banned, etc).
