@@ -48,10 +48,11 @@ jobs:
           CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: '1'
         run: |
-          # 反检测层默认关闭(KIRO_ANTIDETECT 未设)。裸浏览器 headless 直连实测页面正常渲染(13 buttons)。
-          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker 2>&1
+          # 反检测已关(KIRO_ANTIDETECT 未设)，页面正常渲染。sent-otp 被 TES BLOCKED 需住宅代理，只代理注册流量。
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --proxy "$PROXY_URL" 2>&1
 
       - name: Show result
         if: always()
