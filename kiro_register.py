@@ -362,6 +362,51 @@ async def _move_to_element(page, locator):
         pass
 
 
+async def _find_email_input(page, log):
+    """Locate the AWS signup email input robustly.
+
+    AWS signin.aws is a React SPA; under Camoufox (Firefox core) it renders
+    slower than Chromium and the email field's type attribute may differ, so
+    we wait for visibility across several selectors instead of taking a
+    one-shot `count()` snapshot. Returns the first visible match, or None
+    (with a diagnostic dump) if none appear within the window.
+    """
+    selectors = [
+        'xpath=//input[@type="email"]',
+        'xpath=//input[@autocomplete="email"]',
+        'xpath=//input[@name="email"]',
+        'xpath=//input[@name="username"]',
+        'xpath=//input[@type="text"]',
+    ]
+    for sel in selectors:
+        loc = page.locator(sel)
+        try:
+            await loc.first.wait_for(state="visible", timeout=8000)
+            if await loc.first.is_visible():
+                log(f"Email input found via {sel}", "dbg")
+                return loc.first
+        except Exception:
+            continue
+    # Diagnostic: dump the real inputs so the next run can be fixed precisely.
+    try:
+        probe = await page.evaluate("""() => {
+            const inputs = Array.from(document.querySelectorAll('input')).map(i => ({
+                type: i.type || '', name: i.name || '', id: i.id || '',
+                ph: i.placeholder || '', ac: i.autocomplete || '',
+                vis: (i.offsetWidth > 0 && i.offsetHeight > 0),
+            }));
+            return { url: location.href, title: document.title,
+                     body: (document.body ? document.body.innerText : '').slice(0, 400),
+                     inputs: inputs };
+        }""")
+        log(f"Email input NOT found - url={probe.get('url')!r}", "err")
+        log(f"Email input NOT found - inputs={probe.get('inputs')}", "err")
+        log(f"Email input NOT found - body={probe.get('body')!r}", "err")
+    except Exception as e:
+        log(f"Email input diagnostic failed: {e}", "err")
+    return None
+
+
 def _generate_password(length=16, default=None):
     if default:
         return default
@@ -926,9 +971,10 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
 
             # On signin.aws, fill the email.
             if "signin.aws" in page.url:
-                email_input = page.locator('xpath=//input[@type="email"]')
-                if await email_input.count() == 0:
-                    email_input = page.locator('xpath=//input[@type="text"]').first
+                email_input = await _find_email_input(page, log)
+                if email_input is None:
+                    callback_server.shutdown()
+                    return _partial_result("email input not found on signin.aws")
                 await _move_to_element(page, email_input)
                 await _human_type(page, email_input, email)
                 # Removed unnecessary delay
@@ -1061,12 +1107,10 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
 
             # EMAIL (fallback for when signin.aws email entry didn't stick).
             if state == "EMAIL":
-                email_input = page.locator('xpath=//input[@type="email"]')
-                if await email_input.count() == 0:
-                    email_input = page.locator('xpath=//input[@type="text"]')
-                if await email_input.count() > 0:
-                    await _move_to_element(page, email_input.first)
-                    await _human_type(page, email_input.first, email)
+                email_input = await _find_email_input(page, log)
+                if email_input is not None:
+                    await _move_to_element(page, email_input)
+                    await _human_type(page, email_input, email)
                     # Removed unnecessary delay
                     log(f"Email filled (state machine fallback): {email}", "ok")
                     await page.evaluate("""() => {
