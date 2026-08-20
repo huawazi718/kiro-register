@@ -49,13 +49,15 @@ jobs:
           CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: '1'
           DISPLAY: ':99'
         run: |
-          # Headless 被 Kiro 前端检测，SPA 不渲染按钮。改用 xvfb 虚拟屏 + headed 浏览器。
+          # 出口 IP 必须走住宅代理（数据中心 IP 会被 AWS 返回空壳页）；
+          # 查码(CF worker)、打码(CapSolver)直连不占代理流量，代理只用于浏览器/OIDC。
           Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
           sleep 2
-          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless 2>&1
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless --proxy "$PROXY_URL" 2>&1
 
       - name: Show result
         if: always()
