@@ -35,8 +35,6 @@ jobs:
         env:
           HTTPS_PROXY: ''
           HTTP_PROXY: ''
-          https_proxy: ''
-          http_proxy: ''
         run: |
           pip install -r requirements.txt
           python -m playwright install chromium
