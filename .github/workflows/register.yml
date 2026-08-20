@@ -49,14 +49,13 @@ jobs:
           CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
-          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: '1'
           DISPLAY: ':99'
         run: |
-          # 第2步：xvfb 有头 + 住宅代理（headless 变量已排除，现在叠加代理测最后组合）
+          # 去掉代理直连 + xvfb 有头 + minimal 反检测（借鉴 grok2 的 WebRTC 屏蔽 + 贝塞尔轨迹）
           Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
           sleep 2
-          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless --proxy "$PROXY_URL" 2>&1
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless 2>&1
 
       - name: Show result
         if: always()

@@ -75,8 +75,8 @@ _VIEWPORT_SIZES = [
 _LOCALES = ["en-US", "en-GB", "en-CA", "en-AU"]
 
 _TIMEZONES = [
-    "America/New_York", "America/Chicago", "America/Denver",
-    "America/Los_Angeles", "America/Toronto", "Europe/London",
+    "America/New_York", "America/New_York", "America/New_York",
+    "America/Chicago", "America/Toronto", "Europe/London",
 ]
 
 _WEBGL_VENDORS = ["Google Inc. (NVIDIA)", "Google Inc. (AMD)", "Google Inc. (Intel)"]
@@ -330,13 +330,32 @@ async def _human_delay(min_s=1.0, max_s=3.0):
 
 
 async def _move_to_element(page, locator):
-    """Move the mouse onto the target element in a vaguely-human way."""
+    """Move the mouse onto the target element in a vaguely-human way.
+
+    grok2 借鉴：用贝塞尔曲线（带随机控制点）模拟人类手部移动轨迹，
+    替代原来的直线 steps 移动——直线轨迹是 TES 的典型机器人特征。
+    """
     try:
         box = await locator.bounding_box()
         if box:
             target_x = box["x"] + box["width"] * _random.uniform(0.3, 0.7)
             target_y = box["y"] + box["height"] * _random.uniform(0.3, 0.7)
-            await page.mouse.move(target_x, target_y, steps=_random.randint(5, 15))
+            # 当前鼠标位置未知（Playwright 默认在 0,0 附近），从屏幕中上区域起手更像真人
+            start_x = _random.uniform(0, box["x"] if box["x"] > 0 else 10)
+            start_y = _random.uniform(0, box["y"] if box["y"] > 0 else 10)
+            # 两个随机控制点，产生自然的弧线
+            cx1 = (start_x + target_x) / 2 + _random.uniform(-80, 80)
+            cy1 = (start_y + target_y) / 2 + _random.uniform(-80, 80)
+            cx2 = (start_x + target_x) / 2 + _random.uniform(-60, 60)
+            cy2 = (start_y + target_y) / 2 + _random.uniform(-60, 60)
+            steps = _random.randint(20, 40)
+            for i in range(1, steps + 1):
+                t = i / steps
+                # 三次贝塞尔曲线
+                mx = (1 - t) ** 3 * start_x + 3 * (1 - t) ** 2 * t * cx1 + 3 * (1 - t) * t ** 2 * cx2 + t ** 3 * target_x
+                my = (1 - t) ** 3 * start_y + 3 * (1 - t) ** 2 * t * cy1 + 3 * (1 - t) * t ** 2 * cy2 + t ** 3 * target_y
+                await page.mouse.move(mx, my)
+                await asyncio.sleep(_random.uniform(0.005, 0.02))
             await asyncio.sleep(_random.uniform(0.1, 0.3))
     except Exception:
         pass
@@ -738,6 +757,9 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                 "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows",
                 "--disable-renderer-backgrounding",
+                # grok2 借鉴：屏蔽 WebRTC 泄漏真实 IP（可被 TES 用于发现数据中心出口）
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                "--webrtc-ip-handling-policy=disable_non_proxied_udp",
             ]
             if headless:
                 launch_args += ["--disable-gpu", "--no-sandbox",
