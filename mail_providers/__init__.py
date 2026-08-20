@@ -16,11 +16,13 @@ from .base import MailProvider
 from .shiromail import ShiroMailProvider
 from .yydsmail import YydsMailProvider
 from .gsuite_imap import GsuiteImapProvider
+from .cf_worker import CfEmailWorkerProvider
 
 PROVIDERS: dict[str, type[MailProvider]] = {
     "shiromail": ShiroMailProvider,
     "yydsmail": YydsMailProvider,
     "gsuite_imap": GsuiteImapProvider,
+    "cf_worker": CfEmailWorkerProvider,
 }
 
 

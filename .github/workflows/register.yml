@@ -1,0 +1,72 @@
+name: Register Kiro Accounts (CF Email Worker + CapSolver)
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Number of accounts to register'
+        required: false
+        default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '5'
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (no proxy)
+        env:
+          HTTPS_PROXY: ''
+          HTTP_PROXY: ''
+          https_proxy: ''
+          http_proxy: ''
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+
+      - name: Register accounts
+        env:
+          MAIL_PROVIDER: cf_worker
+          CF_EMAIL_API_BASE: ${{ secrets.CF_EMAIL_API_BASE }}
+          CF_EMAIL_DOMAIN: ${{ secrets.CF_EMAIL_DOMAIN }}
+          CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
+          CAPTCHA_PROVIDER: capsolver
+          CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker 2>&1
+
+      - name: Show result
+        if: always()
+        run: |
+          echo "=== accounts.db summary ==="
+          python - <<'PY'
+          import sqlite3, os
+          db = os.environ.get("DB_PATH", "accounts.db")
+          if os.path.exists(db):
+              conn = sqlite3.connect(db)
+              cur = conn.execute("SELECT email, incomplete, fail_reason FROM service_accounts ORDER BY id DESC LIMIT 20")
+              for row in cur.fetchall():
+                  print(row)
+              conn.close()
+          else:
+              print("no accounts.db generated")
+          PY

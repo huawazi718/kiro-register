@@ -3,14 +3,16 @@ hCaptcha solver with pluggable provider backends.
 
 Supported providers (selected via the CAPTCHA_PROVIDER env var, default: yescaptcha):
   - yescaptcha  (https://api.yescaptcha.com)   — JSON API: /createTask + /getTaskResult
+  - capsolver   (https://api.capsolver.com)    — same JSON API, different host
   - multibot    (https://api.multibot.cloud)   — classic 2captcha-style API: /in.php + /res.php
 
-Both providers solve hCaptcha proxyless and return a token that is injected into
+All providers solve hCaptcha proxyless and return a token that is injected into
 the page via the shared `_inject_token` helper.
 
 Environment variables:
-    CAPTCHA_PROVIDER      either 'yescaptcha' or 'multibot' (default 'yescaptcha')
+    CAPTCHA_PROVIDER      'yescaptcha' | 'capsolver' | 'multibot' (default 'yescaptcha')
     YESCAPTCHA_API_KEY    required when CAPTCHA_PROVIDER=yescaptcha
+    CAPSOLVER_API_KEY     required when CAPTCHA_PROVIDER=capsolver
     MULTIBOT_API_KEY      required when CAPTCHA_PROVIDER=multibot
 """
 import asyncio
@@ -25,6 +27,9 @@ CAPTCHA_PROVIDER = os.environ.get("CAPTCHA_PROVIDER", "yescaptcha").strip().lowe
 
 YESCAPTCHA_API_KEY = os.environ.get("YESCAPTCHA_API_KEY", "")
 YESCAPTCHA_API_URL = "https://api.yescaptcha.com"
+
+CAPSOLVER_API_KEY = os.environ.get("CAPSOLVER_API_KEY", "")
+CAPSOLVER_API_URL = "https://api.capsolver.com"
 
 MULTIBOT_API_KEY = os.environ.get("MULTIBOT_API_KEY", "")
 MULTIBOT_API_URL = "https://api.multibot.cloud"
@@ -84,15 +89,15 @@ async def _get_sitekey(page: Page) -> str | None:
     return sitekey
 
 
-# ─── Provider: YesCaptcha (JSON API) ─────────────────────────────────────────
+# ─── Provider: JSON API (YesCaptcha / CapSolver, same task shapes) ──────────
 
-async def _yescaptcha_create_task(sitekey: str, page_url: str, log_fn=log) -> str | None:
-    """Create a YesCaptcha task and return the taskId."""
+async def _jsontask_create_task(api_url: str, api_key: str, sitekey: str, page_url: str, label: str, log_fn=log) -> str | None:
+    """Create an HCaptchaTaskProxyless task and return the taskId."""
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{YESCAPTCHA_API_URL}/createTask",
+            f"{api_url}/createTask",
             json={
-                "clientKey": YESCAPTCHA_API_KEY,
+                "clientKey": api_key,
                 "task": {
                     "type": "HCaptchaTaskProxyless",
                     "websiteURL": page_url,
@@ -102,38 +107,54 @@ async def _yescaptcha_create_task(sitekey: str, page_url: str, log_fn=log) -> st
         )
         data = resp.json()
         if data.get("errorId", 1) != 0:
-            log_fn(f"YesCaptcha createTask error: {data.get('errorDescription', data)}", "error")
+            log_fn(f"{label} createTask error: {data.get('errorDescription', data)}", "error")
             return None
         task_id = data.get("taskId")
-        log_fn(f"YesCaptcha task created: {task_id}", "info")
+        log_fn(f"{label} task created: {task_id}", "info")
         return task_id
 
 
-async def _yescaptcha_get_result(task_id: str, log_fn=log, timeout: int = 120) -> str | None:
+async def _jsontask_get_result(api_url: str, api_key: str, task_id: str, label: str, log_fn=log, timeout: int = 120) -> str | None:
     """Poll for the task result and return the captcha token."""
     start = time.time()
     async with httpx.AsyncClient(timeout=30) as client:
         while time.time() - start < timeout:
             await asyncio.sleep(5)
             resp = await client.post(
-                f"{YESCAPTCHA_API_URL}/getTaskResult",
+                f"{api_url}/getTaskResult",
                 json={
-                    "clientKey": YESCAPTCHA_API_KEY,
+                    "clientKey": api_key,
                     "taskId": task_id,
                 }
             )
             data = resp.json()
             if data.get("errorId", 1) != 0:
-                log_fn(f"YesCaptcha getTaskResult error: {data.get('errorDescription', data)}", "error")
+                log_fn(f"{label} getTaskResult error: {data.get('errorDescription', data)}", "error")
                 return None
             status = data.get("status")
             if status == "ready":
                 token = data.get("solution", {}).get("gRecaptchaResponse")
-                log_fn(f"YesCaptcha token retrieved ({len(token) if token else 0} chars)", "ok")
+                log_fn(f"{label} token retrieved ({len(token) if token else 0} chars)", "ok")
                 return token
-            log_fn(f"YesCaptcha waiting... ({int(time.time()-start)}s)", "dbg")
-    log_fn("YesCaptcha timed out", "error")
+            log_fn(f"{label} waiting... ({int(time.time()-start)}s)", "dbg")
+    log_fn(f"{label} timed out", "error")
     return None
+
+
+async def _yescaptcha_create_task(sitekey: str, page_url: str, log_fn=log) -> str | None:
+    return await _jsontask_create_task(YESCAPTCHA_API_URL, YESCAPTCHA_API_KEY, sitekey, page_url, "YesCaptcha", log_fn)
+
+
+async def _yescaptcha_get_result(task_id: str, log_fn=log, timeout: int = 120) -> str | None:
+    return await _jsontask_get_result(YESCAPTCHA_API_URL, YESCAPTCHA_API_KEY, task_id, "YesCaptcha", log_fn, timeout)
+
+
+async def _capsolver_create_task(sitekey: str, page_url: str, log_fn=log) -> str | None:
+    return await _jsontask_create_task(CAPSOLVER_API_URL, CAPSOLVER_API_KEY, sitekey, page_url, "CapSolver", log_fn)
+
+
+async def _capsolver_get_result(task_id: str, log_fn=log, timeout: int = 120) -> str | None:
+    return await _jsontask_get_result(CAPSOLVER_API_URL, CAPSOLVER_API_KEY, task_id, "CapSolver", log_fn, timeout)
 
 
 # ─── Provider: Multibot (classic 2captcha-style API) ─────────────────────────
@@ -216,6 +237,8 @@ def _active_provider() -> tuple[str, str]:
     provider = CAPTCHA_PROVIDER or "yescaptcha"
     if provider == "multibot":
         return "multibot", MULTIBOT_API_KEY
+    if provider == "capsolver":
+        return "capsolver", CAPSOLVER_API_KEY
     # Default and explicit yescaptcha fall here.
     return "yescaptcha", YESCAPTCHA_API_KEY
 
@@ -224,6 +247,8 @@ async def _create_task(sitekey: str, page_url: str, log_fn=log) -> str | None:
     provider, _ = _active_provider()
     if provider == "multibot":
         return await _multibot_submit(sitekey, page_url, log_fn)
+    if provider == "capsolver":
+        return await _capsolver_create_task(sitekey, page_url, log_fn)
     return await _yescaptcha_create_task(sitekey, page_url, log_fn)
 
 
@@ -231,6 +256,8 @@ async def _get_task_result(task_id: str, log_fn=log, timeout: int = 120) -> str 
     provider, _ = _active_provider()
     if provider == "multibot":
         return await _multibot_get_result(task_id, log_fn, timeout)
+    if provider == "capsolver":
+        return await _capsolver_get_result(task_id, log_fn, timeout)
     return await _yescaptcha_get_result(task_id, log_fn, timeout)
 
 

@@ -60,6 +60,9 @@ DEFAULT_CFG = {
     "default_password": "",
     "domain_suspend_duration": 3600,
     "default_password": "",
+    "cf_email_api_base": "",
+    "cf_email_domain": "",
+    "cf_email_prefix": "kiro",
     "shiromail_base_url": "https://shiromail.galiais.com",
     "shiromail_api_key": "",
     "shiromail_domain_id": "",
@@ -87,6 +90,9 @@ ENV_MAP = {
     "YYDSMAIL_API_KEY": "yydsmail_api_key",
     "YYDSMAIL_DOMAIN": "yydsmail_domain",
     "YYDSMAIL_SUBDOMAIN": "yydsmail_subdomain",
+    "CF_EMAIL_API_BASE": "cf_email_api_base",
+    "CF_EMAIL_DOMAIN": "cf_email_domain",
+    "CF_EMAIL_PREFIX": "cf_email_prefix",
     "ROUTER9_URL": "router9_url",
     "ROUTER9_PASSWORD": "router9_password",
     "ROUTER9_AUTH_TOKEN": "router9_auth_token",
@@ -238,6 +244,13 @@ def build_mail_provider(cfg: dict, config_path: Path, domain_pool=None):
             local_length=10,
             email_filter=cfg.get("imap_email_filter", ""),
             domain_pool=domain_pool,
+        )
+
+    if name == "cf_worker":
+        return mail_providers.CfEmailWorkerProvider(
+            api_base=cfg.get("cf_email_api_base", ""),
+            domain=cfg.get("cf_email_domain", ""),
+            prefix=cfg.get("cf_email_prefix", "kiro"),
         )
 
     if name == "shiromail":
