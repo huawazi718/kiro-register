@@ -146,6 +146,31 @@ def _random_fingerprint_config():
     }
 
 
+# Anti-detect mode (iterated empirically):
+#   - "full"   : playwright-stealth + the big fingerprint init-script  -> breaks
+#                Kiro's React SPA (renders empty "Kiro Web Portal" shell).
+#   - "minimal": only hide navigator.webdriver via a tiny init-script -> keeps
+#                the SPA intact AND masks automation.
+#   - "off"    : nothing injected (bare browser) -> SPA renders, but webdriver is
+#                exposed and AWS TES blocks send-otp.
+# Default is "minimal" — the only mode that satisfies both requirements.
+_antidetect_mode = os.environ.get("KIRO_ANTIDETECT", "minimal").strip().lower()
+
+
+def _build_minimal_stealth_script():
+    """Tiny init-script: just hide automation markers, touch nothing else.
+
+    The full fingerprint script and playwright-stealth both broke React, so we
+    keep this to the absolute minimum required to pass AWS TES while leaving the
+    SPA completely functional.
+    """
+    return """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+try { delete navigator.__proto__.webdriver; } catch (e) {}
+if (!window.chrome) { window.chrome = { runtime: {} }; }
+"""
+
+
 def _build_fingerprint_script(fp_config):
     """Build the JS snippet injected into the browser to override fingerprinting surfaces."""
     return """() => {
@@ -515,15 +540,6 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
     if cancel_check and cancel_check():
         return None
 
-    # Previous investigation: the React SPA renders an empty shell when the
-    # fingerprint init-script is active. Root cause was three "noise" hooks
-    # (Canvas/Audio/ClientRects) plus Date.now()/Performance.now() jitter that
-    # broke React's scheduler. Those are now removed; the remaining overrides
-    # only hide automation flags (webdriver) + patch benign fingerprint surfaces,
-    # which is required to get past AWS TES on send-otp. So anti-detect is back
-    # ON by default. Set KIRO_ANTIDETECT=0 to disable it.
-    use_antidetect = os.environ.get("KIRO_ANTIDETECT", "1").strip().lower() not in {"0", "false", "no", "off"}
-
     # Build a random fingerprint config.
     fp_config = _random_fingerprint_config()
     log(f"Generated browser fingerprint: Chrome/{fp_config['user_agent'].split('Chrome/')[1].split(' ')[0]}, "
@@ -741,10 +757,16 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             )
             page = await context.new_page()
             page.set_default_timeout(90000)  # 90s timeout for all operations
-            if use_antidetect:
+
+            if _antidetect_mode == "minimal":
+                await context.add_init_script(_build_minimal_stealth_script())
+                log("Anti-detect: minimal (webdriver hidden, no SPA-breaking hooks)", "dbg")
+            elif _antidetect_mode == "full":
                 await Stealth().apply_stealth_async(page)
+                await context.add_init_script(_build_fingerprint_script(fp_config))
+                log("Anti-detect: full (stealth + fingerprint script)", "dbg")
             else:
-                log("Anti-detect disabled — running a clean browser (KIRO_ANTIDETECT=0)", "dbg")
+                log("Anti-detect: off (bare browser)", "dbg")
 
             # Track the latest create-identity outcome so the OTP retry loop can
             # short-circuit on fatal errors (OTP consumed, account banned, etc).
@@ -772,8 +794,8 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                         pass
             page.on("response", _on_profile_response)
 
-            # Inject the deep fingerprint overrides.
-            if use_antidetect:
+            # Inject the deep fingerprint overrides (only for "full" mode).
+            if _antidetect_mode == "full":
                 await context.add_init_script(_build_fingerprint_script(fp_config))
 
             await page.goto(signin_url, timeout=60000)
@@ -1683,7 +1705,9 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
             device_scale_factor=fp_config["pixel_ratio"],
         )
         page = await ctx.new_page()
-        if use_antidetect:
+        if _antidetect_mode == "minimal":
+            await ctx.add_init_script(_build_minimal_stealth_script())
+        elif _antidetect_mode == "full":
             await Stealth().apply_stealth_async(page)
             await ctx.add_init_script(_build_fingerprint_script(fp_config))
 
