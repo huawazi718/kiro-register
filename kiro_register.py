@@ -563,6 +563,13 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
     if cancel_check and cancel_check():
         return None
 
+    # The bundled anti-detection layers (playwright-stealth + the custom
+    # fingerprint init-script) break Kiro's React SPA: with them enabled the
+    # page renders an empty "Kiro Web Portal" shell (0 buttons), while a bare
+    # Playwright browser renders the full sign-in UI (13 buttons). Default them
+    # OFF; set KIRO_ANTIDETECT=1 to opt back in.
+    use_antidetect = os.environ.get("KIRO_ANTIDETECT", "").strip().lower() in {"1", "true", "yes", "on"}
+
     # Build a random fingerprint config.
     fp_config = _random_fingerprint_config()
     log(f"Generated browser fingerprint: Chrome/{fp_config['user_agent'].split('Chrome/')[1].split(' ')[0]}, "
@@ -780,7 +787,10 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             )
             page = await context.new_page()
             page.set_default_timeout(90000)  # 90s timeout for all operations
-            await Stealth().apply_stealth_async(page)
+            if use_antidetect:
+                await Stealth().apply_stealth_async(page)
+            else:
+                log("Anti-detect disabled — running a clean browser (KIRO_ANTIDETECT unset)", "dbg")
 
             # Track the latest create-identity outcome so the OTP retry loop can
             # short-circuit on fatal errors (OTP consumed, account banned, etc).
@@ -809,7 +819,8 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             page.on("response", _on_profile_response)
 
             # Inject the deep fingerprint overrides.
-            await context.add_init_script(_build_fingerprint_script(fp_config))
+            if use_antidetect:
+                await context.add_init_script(_build_fingerprint_script(fp_config))
 
             await page.goto(signin_url, timeout=60000)
             # networkidle can never fire on ad/analytics-heavy pages; prefer
@@ -1718,8 +1729,9 @@ async def register_via_9router_oauth(headless=True, auto_login=True, skip_onboar
             device_scale_factor=fp_config["pixel_ratio"],
         )
         page = await ctx.new_page()
-        await Stealth().apply_stealth_async(page)
-        await ctx.add_init_script(_build_fingerprint_script(fp_config))
+        if use_antidetect:
+            await Stealth().apply_stealth_async(page)
+            await ctx.add_init_script(_build_fingerprint_script(fp_config))
 
         try:
             await page.goto(verify_url, timeout=60000)

@@ -39,7 +39,6 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install chromium
           python -m playwright install-deps chromium
-          sudo apt-get install -y -q xvfb
 
       - name: Register accounts
         env:
@@ -49,15 +48,10 @@ jobs:
           CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
-          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: '1'
-          DISPLAY: ':99'
         run: |
-          # 出口 IP 必须走住宅代理（数据中心 IP 会被 AWS 返回空壳页）；
-          # 查码(CF worker)、打码(CapSolver)直连不占代理流量，代理只用于浏览器/OIDC。
-          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
-          sleep 2
-          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless --proxy "$PROXY_URL" 2>&1
+          # 反检测层默认关闭(KIRO_ANTIDETECT 未设)。裸浏览器 headless 直连实测页面正常渲染(13 buttons)。
+          python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker 2>&1
 
       - name: Show result
         if: always()
