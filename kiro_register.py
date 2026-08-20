@@ -832,16 +832,23 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                 # Dump visible button texts once for debugging the headless DOM.
                 try:
                     for _ in range(20):
-                        txts = await page.evaluate("""() => {
-                            return Array.from(document.querySelectorAll('button'))
+                        probe = await page.evaluate("""() => {
+                            const btns = Array.from(document.querySelectorAll('button'))
                                 .filter(b => b.offsetWidth > 0 && b.offsetHeight > 0)
                                 .map(b => (b.innerText || '').trim())
                                 .filter(t => t.length > 0);
+                            return {
+                                title: document.title,
+                                body: (document.body ? document.body.innerText : '').slice(0, 300),
+                                btns: btns,
+                                url: location.href,
+                            };
                         }""")
-                        if any("builder" in t.lower() for t in txts):
+                        if any("builder" in t.lower() for t in probe.get("btns", [])):
                             break
                         await asyncio.sleep(1)
-                    log(f"Visible buttons: {txts}", "dbg")
+                    log(f"Probe title={probe.get('title')!r} btns={probe.get('btns')}", "dbg")
+                    log(f"Probe body={probe.get('body')!r}", "dbg")
                 except Exception as e:
                     log(f"button probe failed: {e}", "dbg")
 
