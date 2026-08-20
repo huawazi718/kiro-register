@@ -825,17 +825,29 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             # Click the AWS Builder ID button.
             if "app.kiro.dev" in page.url:
                 log("Selecting sign-in method...")
-                await asyncio.sleep(2)
+                # The SPA renders sign-in buttons asynchronously; wait up to 20s
+                # for any button whose text mentions "Builder".
                 signin_clicked = False
 
-                # Current UI (Mantine): the button is a plain <button> whose
-                # innerText is "Builder ID\nSign in". The old #layout-viewport
-                # XPath no longer matches, and contains(text(),...) fails because
-                # the text is split across a line break. Click by iterating every
-                # visible button and matching the text we really see.
+                # Dump visible button texts once for debugging the headless DOM.
+                try:
+                    for _ in range(20):
+                        txts = await page.evaluate("""() => {
+                            return Array.from(document.querySelectorAll('button'))
+                                .filter(b => b.offsetWidth > 0 && b.offsetHeight > 0)
+                                .map(b => (b.innerText || '').trim())
+                                .filter(t => t.length > 0);
+                        }""")
+                        if any("builder" in t.lower() for t in txts):
+                            break
+                        await asyncio.sleep(1)
+                    log(f"Visible buttons: {txts}", "dbg")
+                except Exception as e:
+                    log(f"button probe failed: {e}", "dbg")
+
                 for sel in [
                     'xpath=//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "builder id")]',
-                    'xpath=//button[normalize-space()="Builder ID Sign in"]',
+                    'xpath=//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "builder")]',
                     'xpath=//button[contains(text(),"Builder ID")]',
                     'xpath=//button[contains(text(),"Sign in")]',
                 ]:
@@ -855,16 +867,18 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                         for (const b of btns) {
                             if (b.offsetWidth === 0 || b.offsetHeight === 0) continue;
                             const t = (b.innerText || '').toLowerCase();
-                            if (t.includes('builder id')) {
+                            if (t.includes('builder')) {
                                 b.click();
-                                return true;
+                                return t.trim();
                             }
                         }
                         return false;
                     }""")
                     if clicked:
                         signin_clicked = True
-                        log("Clicked sign-in button (JS fallback)", "ok")
+                        log(f"Clicked sign-in button (JS fallback): {clicked}", "ok")
+                    else:
+                        log("No Builder button found by JS fallback", "err")
 
                 if signin_clicked:
                     await asyncio.sleep(2)
@@ -878,6 +892,8 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                     log(f"Redirected to AWS signin: {page.url[:80]}", "ok")
                 elif CallbackHandler.signin_callback_params:
                     log("OAuth callback captured (no AWS signin interstitial)", "ok")
+                else:
+                    log(f"Still on {page.url[:80]} after click attempt", "err")
 
             # Build the OIDC authorize URL.
             if CallbackHandler.signin_callback_params and not authorization_code:
