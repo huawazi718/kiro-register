@@ -58,11 +58,10 @@ jobs:
           CF_EMAIL_PREFIX: ${{ secrets.CF_EMAIL_PREFIX }}
           CAPTCHA_PROVIDER: capsolver
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
-          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: '1'
           DISPLAY: ':99'
         run: |
-          # Camoufox (Firefox-core) 反检测 + xvfb 有头 + humanize 鼠标 + 住宅代理
+          # Camoufox (Firefox-core) 反检测 + xvfb 有头 + humanize 鼠标（直连无代理）
           Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
           sleep 2
           python service.py --batch ${{ inputs.count }} --delay 10 --provider cf_worker --no-headless 2>&1
